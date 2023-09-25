@@ -98,6 +98,8 @@ static inline void setThreadName(const std::string &name)
 
 using namespace unreal_vision_bridge;
 
+
+
 class UnrealVisionBridge
 {
 private:
@@ -173,20 +175,18 @@ private:
 
   std::string baseName, baseNameTF, address;
   uint16_t port;
-  int connection;
+  int connection, queueSize;
 
 public:
-  UnrealVisionBridge(const ros::NodeHandle &nh = ros::NodeHandle(), const ros::NodeHandle &priv_nh = ros::NodeHandle("~"))
+  UnrealVisionBridge(const ros::NodeHandle &nh = ros::NodeHandle(), const ros::NodeHandle &priv_nh = ros::NodeHandle("~"), std::string baseName="", int port=0, std::string address="", int queueSize=0)
     : sizeRGB(3 * sizeof(uint8_t)), sizeFloat(sizeof(uint16_t)), nh(nh), priv_nh(priv_nh), running(false), newData(false), isConnected(false)
   {
-    int portNumber, queueSize;
-    priv_nh.param("base_name", baseName, std::string(UV_DEFAULT_NS));
-    priv_nh.param("base_name_tf", baseNameTF, baseName);
-    priv_nh.param("address", address, std::string("192.168.100.160"));
-    priv_nh.param("port", portNumber, 10000);
-    priv_nh.param("queue_size", queueSize, 5);
-
-    port = (uint16_t)std::min(std::max(portNumber, 0), 0xFFFF);
+    int portNumber;
+    this->baseName=baseName;
+    this->baseNameTF=baseName;
+    this->address=address;
+    this->queueSize=queueSize;
+    this->port = (uint16_t)std::min(std::max(port, 0), 0xFFFF);
 
     OUT_INFO("parameter:" << std::endl
              << "   base_name: " FG_CYAN << baseName << NO_COLOR << std::endl
@@ -209,7 +209,7 @@ public:
 
   void start()
   {
-    OUT_INFO("starting receiver and transmitter threads.");
+    OUT_INFO("starting receiver and transmitter threads from port: " << this->port);
     running = true;
     transmitter = std::thread(&UnrealVisionBridge::transmit, this);
     receiver = std::thread(&UnrealVisionBridge::receive, this);
@@ -560,31 +560,109 @@ private:
   }
 };
 
+
+
+class UnrealVisionBridgeArray{
+
+	private:
+
+		int Nb_Cameras;
+		UnrealVisionBridge** Camera_Array;
+		ros::NodeHandle nh, priv_nh;
+
+	public:
+
+		UnrealVisionBridgeArray(const ros::NodeHandle &nh = ros::NodeHandle(), const ros::NodeHandle &priv_nh = ros::NodeHandle("~")): nh(nh), priv_nh(priv_nh){
+
+			std::string baseName, baseNameTF, address; 
+			int portNumber, queueSize, nb_cameras;
+			priv_nh.param("base_name", baseName, std::string(UV_DEFAULT_NS));
+			priv_nh.param("base_name_tf", baseNameTF, baseName);
+			priv_nh.param("address", address, std::string("192.168.100.160"));
+			priv_nh.param("port", portNumber, 10000);
+			priv_nh.param("queue_size", queueSize, 5);
+			priv_nh.param("nb_cameras", nb_cameras, 1);
+			//creating object
+			Camera_Array = new UnrealVisionBridge*[nb_cameras];
+			this->Nb_Cameras=nb_cameras;
+			for(int i=0;i<nb_cameras;i++){
+				Camera_Array[i]=new  UnrealVisionBridge(nh, priv_nh, baseName+std::to_string(i), portNumber+i, address, queueSize);
+			}
+
+
+		}
+
+		~UnrealVisionBridgeArray(){
+		
+			stop();
+
+		}
+	
+		void start(){
+			for(int i=0;i<this->Nb_Cameras;i++){
+			
+				this->Camera_Array[i]->start();
+			}
+
+		}
+	
+		void stop(){
+			
+			//stop all camera threads
+
+			for(int i=0;i<this->Nb_Cameras;i++){
+			
+				this->Camera_Array[i]->stop();
+			
+			}
+			
+			//free all camera threads
+			
+			for(int i=0;i<this->Nb_Cameras;i++){
+			
+				free(this->Camera_Array[i]);
+			
+			}
+			
+			//free camera collector
+			
+			free(this->Camera_Array);
+		}	
+	
+		int getSize(){
+
+			return this->Nb_Cameras;
+		}
+
+};
+
 class UnrealVisionNodelet : public nodelet::Nodelet
 {
 private:
-  UnrealVisionBridge *unrealVisionBridge;
+  UnrealVisionBridgeArray *unrealVisionBridgeArray;
 
 public:
-  UnrealVisionNodelet() : Nodelet(), unrealVisionBridge(NULL)
+  UnrealVisionNodelet() : Nodelet(), unrealVisionBridgeArray(NULL)
   {
   }
 
   ~UnrealVisionNodelet()
   {
-    if(unrealVisionBridge)
+    if(unrealVisionBridgeArray)
     {
-      unrealVisionBridge->stop();
-      delete unrealVisionBridge;
+      unrealVisionBridgeArray->stop();
+      delete unrealVisionBridgeArray;
     }
   }
 
   virtual void onInit()
   {
-    unrealVisionBridge = new UnrealVisionBridge(getNodeHandle(), getPrivateNodeHandle());
-    unrealVisionBridge->start();
+    unrealVisionBridgeArray = new UnrealVisionBridgeArray(getNodeHandle(), getPrivateNodeHandle());
+    unrealVisionBridgeArray->start();
   }
 };
+
+
 
 #include <pluginlib/class_list_macros.h>
 PLUGINLIB_EXPORT_CLASS(UnrealVisionNodelet, nodelet::Nodelet)
@@ -594,9 +672,9 @@ int main(int argc, char **argv)
   setThreadName("main thread");
   ros::init(argc, argv, UV_DEFAULT_NS);
 
-  UnrealVisionBridge unrealVisionBridge;
-  unrealVisionBridge.start();
+  UnrealVisionBridgeArray unrealVisionBridgeArray;
+  unrealVisionBridgeArray.start();
   ros::spin();
-  unrealVisionBridge.stop();
+  unrealVisionBridgeArray.stop();
   return 0;
 }
